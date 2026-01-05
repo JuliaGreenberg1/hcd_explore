@@ -8,7 +8,6 @@ import streamlit as st
 st.set_page_config(
     page_title="RegLab Tool Starter",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
 # --- PROFESSIONAL STYLING ---
@@ -18,60 +17,18 @@ hide_st_style = """
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             header {visibility: hidden;}
+            /* Reduce top whitespace so content appears higher on the page */
+            .block-container, section[data-testid="stAppViewContainer"] .main .block-container {
+                padding-top: 0rem !important;
+                margin-top: 0rem !important;
+            }
+            /* Tighter spacing for the top-level app container */
+            section[data-testid="stAppViewContainer"] > div {
+                padding-top: 0rem !important;
+            }
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
-
-# Force sidebar to stay open using JavaScript injection
-st.components.v1.html(
-    """
-<script>
-(function() {
-    function disableSidebarCollapse() {
-        // Find and remove all possible collapse buttons
-        const selectors = [
-            'button[aria-label*="sidebar"]',
-            'button[title*="sidebar"]',
-            '[data-testid*="sidebar"][data-testid*="collapse"]',
-            '[data-testid*="Collapse"]',
-            'button:has(svg[viewBox*="0 0"])',
-        ];
-        
-        selectors.forEach(selector => {
-            try {
-                document.querySelectorAll(selector).forEach(el => {
-                    if (el.textContent?.toLowerCase().includes('close') || 
-                        el.getAttribute('aria-label')?.toLowerCase().includes('sidebar') ||
-                        el.getAttribute('title')?.toLowerCase().includes('sidebar')) {
-                        el.style.display = 'none';
-                        el.remove();
-                    }
-                });
-            } catch(e) {}
-        });
-        
-        // Force sidebar to be visible
-        const sidebar = document.querySelector('[data-testid="stSidebar"]');
-        if (sidebar) {
-            sidebar.style.display = 'block';
-            sidebar.style.visibility = 'visible';
-        }
-    }
-    
-    // Run on load and continuously
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', disableSidebarCollapse);
-    } else {
-        disableSidebarCollapse();
-    }
-    
-    // Check periodically
-    setInterval(disableSidebarCollapse, 200);
-})();
-</script>
-""",
-    height=0,
-)
 
 
 # --- AUTHENTICATION ---
@@ -92,154 +49,122 @@ def get_secret(key):
 
 def check_password():
     """Returns `True` if the user had the correct password."""
-    master_password = get_secret("password")
-
-    if not master_password:
-        return True
-
-    # If already authenticated, just return True
-    if st.session_state.get("password_correct"):
-        return True
-
-    # Show the login form
-    st.subheader("🔒 Password Required")
-    user_password = st.text_input("Please enter the password", type="password")
-
-    if user_password:
-        if str(user_password).strip() == str(master_password).strip():
-            st.session_state["password_correct"] = True
-            st.rerun()  # Refresh the app to show the content
-        else:
-            st.error("😕 Password incorrect")
-
-    return False
+    # Authentication disabled by user request (option 1)
+    return True
 
 
 # --- APP START ---
 
-# 1. AUTHENTICATION CHECK
-# We use our helper to check for the password
 if not check_password():
     st.stop()
 
-# 2. HEADER SECTION
-st.title("🧪 Researcher's Web App Starter")
-st.markdown("""
-Welcome! This app is a template to help you turn your data scripts into interactive tools.
-Edit `app.py` to customize this.
-""")
+example_path = "data/metrics_collapsed_vs_not.csv"
+if os.path.exists(example_path):
+    df_example = pd.read_csv(example_path)
 
-# 3. SIDEBAR - INPUTS
-with st.sidebar:
-    st.header("Upload Data")
-    uploaded_file = st.file_uploader("Choose a CSV or JSON file", type=["csv", "json"])
+    # --- USER SELECTIONS ---
+    # Argument choices with display names
+    arg_display_map = {
+        "Strategy + prompt": "strategy_prompt",
+        "Model": "model",
+        "Non-conflicts are related?": "related_nonconflicts",
+        "Labels?": "labels",
+        "Cross-references?": "cross_refs",
+    }
 
-    st.info("💡 **Pro-tip:** Use `st.sidebar` to keep controls organized.")
+    # Base performance metric choices (we'll show collapsed vs non-collapsed automatically)
+    base_metrics = ["precision", "accuracy", "recall", "f1_score"]
 
-# 4. MAIN CONTENT - DATA LOADING
-if uploaded_file is not None:
-    # Determine file type and load accordingly
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
+    # No sidebar — controls are shown on the main page
+
+    # Main-page visible controls placed near the top so users don't have to open anything
+    cols = st.columns([1, 1, 1])
+    with cols[0]:
+        arg_choice_label = st.selectbox("Select argument (group by)", list(arg_display_map.keys()), key="arg_choice_main")
+    with cols[1]:
+        metric_choice = st.selectbox("Select performance metric", base_metrics, key="metric_choice_main")
+    # Mirror sidebar selections into session state if user used sidebar instead
+    if not arg_choice_label:
+        arg_choice_label = st.session_state.get("arg_choice_sidebar")
+    if not metric_choice:
+        metric_choice = st.session_state.get("metric_choice_sidebar")
+
+    arg_col = arg_display_map[arg_choice_label]
+
+    # base metric selected directly
+    base_metric = metric_choice
+
+    collapsed_col = f"{base_metric}_c"
+    noncollapsed_col = base_metric
+
+    # Validate required columns exist
+    missing = [c for c in (arg_col, collapsed_col, noncollapsed_col) if c not in df_example.columns]
+    if missing:
+        st.error(f"Missing required columns in CSV: {missing}")
     else:
-        df = pd.read_json(uploaded_file)
+        # Prepare grouped averages
+        # Treat the argument column as string/categorical for grouping
+        df = df_example.copy()
+        df[arg_col] = df[arg_col].astype(str)
 
-    st.subheader("Data Overview")
+        grouped = df.groupby(arg_col).agg(
+            collapsed_mean=(collapsed_col, "mean"),
+            noncollapsed_mean=(noncollapsed_col, "mean"),
+        )
+        grouped = grouped.reset_index()
 
-    # 5. DATA DISPLAY (Command: st.dataframe)
-    st.write(f"Showing {len(df)} rows:")
-    st.dataframe(df, use_container_width=True)
+        # Melt into long form for plotting
+        plot_df = grouped.melt(
+            id_vars=[arg_col],
+            value_vars=["collapsed_mean", "noncollapsed_mean"],
+            var_name="Type",
+            value_name="Value",
+        )
 
-    # 6. FILTERING (Command: st.selectbox, st.slider)
-    st.divider()
-    st.subheader("Interactive Analysis")
+        # Rename Type values for display
+        plot_df["Type"] = plot_df["Type"].map({
+            "collapsed_mean": "Collapsed",
+            "noncollapsed_mean": "Non-collapsed",
+        })
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if "Category" in df.columns:
-            categories = df["Category"].unique()
-            selected_cat = st.multiselect(
-                "Filter by Category", options=categories, default=categories
+        # Sort categories for consistent plotting (optional: by total mean)
+        try:
+            order = (
+                grouped.assign(total_mean=(grouped["collapsed_mean"] + grouped["noncollapsed_mean"]) / 2)
+                .sort_values("total_mean", ascending=False)[arg_col]
+                .tolist()
             )
-            filtered_df = df[df["Category"].isin(selected_cat)]
-        else:
-            filtered_df = df
-            st.warning("No 'Category' column found for filtering.")
+        except Exception:
+            order = grouped[arg_col].tolist()
 
-    with col2:
-        if "Value" in df.columns:
-            min_val, max_val = int(df["Value"].min()), int(df["Value"].max())
-            val_range = st.slider(
-                "Filter by Value Range", min_val, max_val, (min_val, max_val)
-            )
-            filtered_df = filtered_df[
-                (filtered_df["Value"] >= val_range[0])
-                & (filtered_df["Value"] <= val_range[1])
-            ]
+        # Create a horizontal grouped bar chart: Value on x, category (argument) on y
+        color_map = {"Non-collapsed": "#32558f", "Collapsed": "#a1beed"}
 
-    # 7. VISUALIZATION (Command: st.plotly_chart)
-    st.write(f"Filtered results: {len(filtered_df)} rows")
+        # Determine Type order from the data so legend matches plotted order
+        type_order = plot_df["Type"].drop_duplicates().tolist()
 
-    tab1, tab2, tab3 = st.tabs(["📊 Chart", "🗺️ Map", "📈 Statistics"])
+        fig = px.bar(
+            plot_df,
+            x="Value",
+            y=arg_col,
+            color="Type",
+            barmode="group",
+            orientation="h",
+            category_orders={arg_col: order, "Type": type_order},
+            color_discrete_map=color_map,
+            labels={
+                arg_col: arg_choice_label,
+                "Value": f"Average {base_metric} (collapsed vs non-collapsed)",
+            },
+            title=f"Average {base_metric}: Collapsed vs Non-collapsed by {arg_choice_label}",
+        )
 
-    with tab1:
-        if not filtered_df.empty:
-            fig = px.bar(
-                filtered_df,
-                x=filtered_df.index,
-                y="Category",
-                color="Date",
-                title="Values by Category",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.write("No data available for the current filters.")
+        fig.update_layout(xaxis_title=f"Average {base_metric}", yaxis_title=arg_choice_label)
 
-    with tab2:
-        if "Latitude" in df.columns and "Longitude" in df.columns:
-            # 8. MAP (Command: st.map)
-            st.map(filtered_df, latitude="Latitude", longitude="Longitude")
-        else:
-            st.info(
-                "To see a map, ensure your data has 'Latitude' and 'Longitude' columns."
-            )
+        st.plotly_chart(fig, use_container_width=True)
 
-    with tab3:
-        st.write("Summary Statistics:")
-        st.write(filtered_df.describe())
-
+        # Optionally show the aggregated table below the plot for reference (collapsible)
+        with st.expander("Show aggregated numbers"):
+            st.dataframe(grouped.rename(columns={"collapsed_mean": collapsed_col, "noncollapsed_mean": noncollapsed_col}))
 else:
-    st.info(
-        "Please upload a file to get started. You can find sample data in the `sample_data` folder."
-    )
-
-    # Show example of how to load local data
-    if st.checkbox("Show Example Data"):
-        example_path = "sample_data/example.csv"
-        if os.path.exists(example_path):
-            df_example = pd.read_csv(example_path)
-            st.write("This is what `example.csv` looks like:")
-            st.dataframe(df_example.head())
-            if "Latitude" in df_example.columns and "Longitude" in df_example.columns:
-                st.map(df_example, latitude="Latitude", longitude="Longitude")
-            else:
-                st.warning("No 'Latitude' or 'Longitude' columns found for mapping.")
-        else:
-            st.error("Example file not found.")
-
-# --- FOOTER ---
-st.divider()
-st.caption("Built with Streamlit • 2025 Researcher Workshop")
-
-# --- SUMMARY OF COMMON COMMANDS ---
-# 1. st.write() - The Swiss Army knife: prints text, dataframes, objects.
-# 2. st.dataframe() - Displays interactive tables.
-# 3. st.selectbox() / st.multiselect() - For dropdown menus.
-# 4. st.slider() - For numeric range input.
-# 5. st.file_uploader() - To let users upload their own data.
-# 6. st.columns() - To layout your app side-by-side.
-# 7. st.sidebar - To put controls in the left panel.
-# 8. st.plotly_chart() - For beautiful interactive charts.
-# 9. st.map() - For quick geospatial visualization.
-# 10. st.secrets - For accessing API keys or passwords securely.
+    st.error("Example file not found.")
